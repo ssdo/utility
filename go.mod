@@ -1,4 +1,4 @@
-module github.com/ssdo/user
+module github.com/ssdo/utility
 
 go 1.12
 
