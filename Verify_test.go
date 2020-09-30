@@ -1,7 +1,7 @@
 package utility_test
 
 import (
-	utility "github.com/ssege/user"
+	utility "github.com/ssdo/user"
 	"github.com/ssgo/u"
 	"regexp"
 	"testing"
