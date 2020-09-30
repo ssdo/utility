@@ -1,4 +1,4 @@
-module github.com/ssege/user
+module github.com/ssdo/user
 
 go 1.12
 
