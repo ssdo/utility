@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func T1estLimit2ms(t *testing.T){
+func TestLimit2ms(t *testing.T){
 	// 200ms内同一key限制10次
 	l := utility.NewLimiter("test", time.Millisecond*20, 10, nil)
 
