@@ -2,6 +2,7 @@ package utility_test
 
 import (
 	"github.com/ssdo/utility"
+	"github.com/ssgo/log"
 	"github.com/ssgo/u"
 	"regexp"
 	"testing"
@@ -65,7 +66,7 @@ func TestVerify(t *testing.T) {
 	}
 
 	for _, a := range tests {
-		if utility.Verify(a[0], u.String(a[1])) != u.Bool(a[2]) {
+		if ok, _ := utility.Verify(a[0], u.String(a[1])); ok != u.Bool(a[2]) {
 			t.Fatal("failed", a)
 		}
 	}
@@ -77,7 +78,7 @@ func TestVerify(t *testing.T) {
 		ImageCode: "123",
 		Age:       300,
 		Sex:       "不男不女",
-	})
+	}, log.DefaultLogger)
 	if ok || field != "Sex" {
 		t.Fatal("failed not Sex", ok, field)
 	}
@@ -89,7 +90,7 @@ func TestVerify(t *testing.T) {
 		ImageCode: "1234",
 		Age:       55,
 		Sex:       "男",
-	})
+	}, log.DefaultLogger)
 	if !ok || field != "" {
 		t.Fatal("not ok", ok, field)
 	}
