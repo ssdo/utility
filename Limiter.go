@@ -54,6 +54,10 @@ func NewLocalLimiter(name string, duration time.Duration, times int) *Limiter {
 
 // 检查一次指定 key，累加后如果在指定时间内的限额范围则返回true
 func (limiter *Limiter) Check(key string, logger *log.Logger) bool {
+	if limiter.durationMs == 0 || limiter.times == 0 {
+		return true
+	}
+
 	if logger == nil {
 		logger = log.DefaultLogger
 	}

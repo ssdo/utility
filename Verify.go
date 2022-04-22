@@ -38,10 +38,11 @@ func RegisterVerify(name string, f func(in interface{}, args []string) bool) {
 }
 
 // 验证一个结构
-func VerifyStruct(in interface{}) (ok bool, field string) {
+func VerifyStruct(in interface{}, logger *log.Logger) (ok bool, field string) {
 	// 查找最终对象
 	v := u.FinalValue(reflect.ValueOf(in))
 	if v.Kind() != reflect.Struct {
+		logger.Error("verify input is not struct", "in", in)
 		return false, ""
 	}
 
@@ -49,20 +50,30 @@ func VerifyStruct(in interface{}) (ok bool, field string) {
 	for i := v.NumField() - 1; i >= 0; i-- {
 		ft := v.Type().Field(i)
 		fv := v.Field(i)
+		if fv.Kind() == reflect.Ptr && fv.IsNil() {
+			// 不校验为nil的指针类型
+			continue
+		}
 		if ft.Anonymous {
 			// 处理继承
-			ok, field = VerifyStruct(fv.Interface())
+			ok, field = VerifyStruct(fv.Interface(), logger)
 			if !ok {
-				return ok, field
+				logger.Warning("verify failed", "in", in, "field", field)
+				return false, field
 			}
 		} else {
 			// 处理字段
 			tag := ft.Tag.Get("verify")
 			if len(tag) >= 2 {
 				// 有效的验证信息
-				ok = Verify(fv.Interface(), tag)
+				ok, err := Verify(fv.Interface(), tag)
 				if !ok {
-					return ok, ft.Name
+					if err != nil {
+						logger.Error(err.Error(), "in", in, "field", ft.Name)
+					} else {
+						logger.Warning("verify failed", "in", in, "field", ft.Name)
+					}
+					return false, ft.Name
 				}
 			}
 		}
@@ -71,36 +82,40 @@ func VerifyStruct(in interface{}) (ok bool, field string) {
 }
 
 // 验证一个数据
-func Verify(in interface{}, setting string) bool {
+func Verify(in interface{}, setting string) (bool, error) {
 	if len(setting) < 2 {
-		return false
+		return false, nil
 	}
 
 	set := verifySets[setting]
 	if set == nil {
-		set = compileVerifySet(setting)
+		set2, err := compileVerifySet(setting)
+		if err != nil {
+			return false, err
+		}
+		set = set2
 		verifySets[setting] = set
 	}
 
 	switch set.Type {
 	case ByFunc:
-		return set.Func(in, set.StringArgs)
+		return set.Func(in, set.StringArgs), nil
 	case Regex:
-		return set.Regex.MatchString(u.String(in))
+		return set.Regex.MatchString(u.String(in)), nil
 	case StringLength:
 		if set.StringArgs != nil && set.StringArgs[0] == "+" {
-			return len(u.String(in)) >= set.IntArgs[0]
+			return len(u.String(in)) >= set.IntArgs[0], nil
 		} else if set.StringArgs != nil && set.StringArgs[0] == "-" {
-			return len(u.String(in)) <= set.IntArgs[0]
+			return len(u.String(in)) <= set.IntArgs[0], nil
 		} else {
-			return len(u.String(in)) == set.IntArgs[0]
+			return len(u.String(in)) == set.IntArgs[0], nil
 		}
 	case GreaterThan:
-		return u.Float64(in) > set.FloatArgs[0]
+		return u.Float64(in) > set.FloatArgs[0], nil
 	case LessThan:
-		return u.Float64(in) < set.FloatArgs[0]
+		return u.Float64(in) < set.FloatArgs[0], nil
 	case Between:
-		return u.Float64(in) >= set.FloatArgs[0] && u.Float64(in) <= set.FloatArgs[1]
+		return u.Float64(in) >= set.FloatArgs[0] && u.Float64(in) <= set.FloatArgs[1], nil
 	case InList:
 		found := false
 		inStr := u.String(in)
@@ -110,13 +125,13 @@ func Verify(in interface{}, setting string) bool {
 				break
 			}
 		}
-		return found
+		return found, nil
 	}
-	return false
+	return false, nil
 }
 
 // 编译验证设置
-func compileVerifySet(setting string) *VerifySet {
+func compileVerifySet(setting string) (*VerifySet, error) {
 	set := new(VerifySet)
 	set.Type = Unknown
 
@@ -129,7 +144,7 @@ func compileVerifySet(setting string) *VerifySet {
 			args = setting[pos+1:]
 		}
 		// 查找是否有注册Func
-		if !made && verifyFunctions[key] != nil {
+		if verifyFunctions[key] != nil {
 			made = true
 			set.Type = ByFunc
 			if args == "" {
@@ -201,12 +216,13 @@ func compileVerifySet(setting string) *VerifySet {
 	if !made {
 		rx, err := regexp.Compile(setting)
 		if err != nil {
-			log.DefaultLogger.Error(err.Error())
+			//log.DefaultLogger.Error(err.Error())
+			return nil, err
 		} else {
 			set.Type = Regex
 			set.Regex = rx
 		}
 	}
 
-	return set
+	return set, nil
 }
