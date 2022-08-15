@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 type VerifyType uint8
@@ -31,16 +32,28 @@ type VerifySet struct {
 }
 
 var verifySets = map[string]*VerifySet{}
+var verifySetsLock = sync.RWMutex{}
 var verifyFunctions = map[string]func(interface{}, []string) bool{}
 
-func RegisterVerify(name string, f func(in interface{}, args []string) bool) {
+func RegisterVerifyFunc(name string, f func(in interface{}, args []string) bool) {
 	verifyFunctions[name] = f
+}
+
+func RegisterVerify(name, setting string) {
+	verifySetsLock.Lock()
+	verifySets[name], _ = compileVerifySet(setting)
+	verifySetsLock.Unlock()
 }
 
 // 验证一个结构
 func VerifyStruct(in interface{}, logger *log.Logger) (ok bool, field string) {
 	// 查找最终对象
-	v := u.FinalValue(reflect.ValueOf(in))
+	var v reflect.Value
+	if inValue, succeed := in.(reflect.Value); succeed {
+		v = inValue
+	} else {
+		v = u.FinalValue(reflect.ValueOf(in))
+	}
 	if v.Kind() != reflect.Struct {
 		logger.Error("verify input is not struct", "in", in)
 		return false, ""
@@ -50,8 +63,17 @@ func VerifyStruct(in interface{}, logger *log.Logger) (ok bool, field string) {
 	for i := v.NumField() - 1; i >= 0; i-- {
 		ft := v.Type().Field(i)
 		fv := v.Field(i)
-		if fv.Kind() == reflect.Ptr && fv.IsNil() {
+		//fmt.Println("   ====", i, v.NumField(), aa, ft.Name, fv.Kind(), fv)
+		if fv.Kind() == reflect.Ptr && (fv.IsNil() || (fv.Elem().Kind() == reflect.String && fv.Elem().String() == "") || (strings.Contains(fv.Elem().Kind().String(), "int") && fv.Elem().Int() == 0)) {
 			// 不校验为nil的指针类型
+			continue
+		}
+		if fv.Kind() == reflect.Slice && (fv.IsNil() || fv.Len() == 0) {
+			// 不校验空数组
+			continue
+		}
+		if fv.Kind() == reflect.Map && (fv.IsNil() || fv.Len() == 0) {
+			// 不校验空对象
 			continue
 		}
 		if ft.Anonymous {
@@ -59,21 +81,28 @@ func VerifyStruct(in interface{}, logger *log.Logger) (ok bool, field string) {
 			ok, field = VerifyStruct(fv.Interface(), logger)
 			if !ok {
 				logger.Warning("verify failed", "in", in, "field", field)
+				//fmt.Println("   ====>>1 ", i, v.NumField(), aa, field)
 				return false, field
 			}
 		} else {
 			// 处理字段
 			tag := ft.Tag.Get("verify")
-			if len(tag) >= 2 {
+			keyTag := ft.Tag.Get("verifyKey")
+			if len(tag) > 0 || len(keyTag) > 0 {
 				// 有效的验证信息
-				ok, err := Verify(fv.Interface(), tag)
+				var err error
+				ok, field, err = _verifyValue(fv, tag, keyTag, logger)
 				if !ok {
-					if err != nil {
-						logger.Error(err.Error(), "in", in, "field", ft.Name)
-					} else {
-						logger.Warning("verify failed", "in", in, "field", ft.Name)
+					if field == "" {
+						field = ft.Name
 					}
-					return false, ft.Name
+					if err != nil {
+						logger.Error(err.Error(), "in", in, "field", field)
+					} else {
+						logger.Warning("verify failed", "in", in, "field", field)
+					}
+					//fmt.Println("   ====>>2 ", i, v.NumField(), aa, field)
+					return false, field
 				}
 			}
 		}
@@ -81,20 +110,81 @@ func VerifyStruct(in interface{}, logger *log.Logger) (ok bool, field string) {
 	return true, ""
 }
 
+// 验证数据（反射）
+func verifyValue(in reflect.Value, setting string, logger *log.Logger) (bool, string, error) {
+	return _verifyValue(in, setting, "", logger)
+}
+
+// 验证数据（反射）
+func _verifyValue(in reflect.Value, setting string, keySetting string, logger *log.Logger) (bool, string, error) {
+	// 验证数组元素
+	t := in.Type()
+	if t.Kind() == reflect.Slice && t.Elem().Kind() != reflect.Uint8 {
+		if len(setting) > 0 {
+			for i := 0; i < in.Len(); i++ {
+				if ok, field, err := verifyValue(in.Index(i), setting, logger); !ok {
+					return false, field, err
+				}
+			}
+		}
+		return true, "", nil
+	} else if t.Kind() == reflect.Map {
+		for _, k := range in.MapKeys() {
+			if len(keySetting) > 0 {
+				// 验证Key
+				if ok, _, err := verifyValue(k, keySetting, logger); !ok {
+					return false, "", err
+				}
+			}
+			if len(setting) > 0 {
+				if ok, field, err := verifyValue(in.MapIndex(k), setting, logger); !ok {
+					return false, field, err
+				}
+			}
+		}
+		return true, "", nil
+	} else if t.Kind() == reflect.Struct {
+		ok, field := VerifyStruct(in, logger)
+		return ok, field, nil
+	} else {
+		if len(setting) == 0 {
+			return true, "", nil
+		}
+
+		if ok, err := verify(in.Interface(), setting); ok {
+			return true, "", nil
+		} else {
+			return false, "", err
+		}
+	}
+}
+
 // 验证一个数据
-func Verify(in interface{}, setting string) (bool, error) {
+func Verify(in interface{}, setting string, logger *log.Logger) (bool, string) {
+	ok, field, err := verifyValue(reflect.ValueOf(in), setting, logger)
+	if err != nil {
+		logger.Error(err.Error(), "in", in, "field", field)
+	}
+	return ok, field
+}
+
+// 验证一个数据
+func verify(in interface{}, setting string) (bool, error) {
 	if len(setting) < 2 {
 		return false, nil
 	}
-
+	verifySetsLock.RLock()
 	set := verifySets[setting]
+	verifySetsLock.RUnlock()
 	if set == nil {
 		set2, err := compileVerifySet(setting)
 		if err != nil {
 			return false, err
 		}
 		set = set2
+		verifySetsLock.Lock()
 		verifySets[setting] = set
+		verifySetsLock.Unlock()
 	}
 
 	switch set.Type {
@@ -107,6 +197,9 @@ func Verify(in interface{}, setting string) (bool, error) {
 			return len(u.String(in)) >= set.IntArgs[0], nil
 		} else if set.StringArgs != nil && set.StringArgs[0] == "-" {
 			return len(u.String(in)) <= set.IntArgs[0], nil
+		} else if len(set.IntArgs) > 1 {
+			l := len(u.String(in))
+			return l >= set.IntArgs[0] && l <= set.IntArgs[1], nil
 		} else {
 			return len(u.String(in)) == set.IntArgs[0], nil
 		}
@@ -170,7 +263,12 @@ func compileVerifySet(setting string) (*VerifySet, error) {
 					set.StringArgs = []string{string(lastChar)}
 					args = args[0 : len(args)-1]
 				}
-				set.IntArgs = []int{u.Int(args)}
+				if strings.ContainsRune(args, ',') {
+					a := strings.Split(args, ",")
+					set.IntArgs = []int{u.Int(a[0]), u.Int(a[1])}
+				} else {
+					set.IntArgs = []int{u.Int(args)}
+				}
 			case "between":
 				// 判断数字范围
 				set.Type = Between

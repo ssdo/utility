@@ -24,7 +24,7 @@ func init() {
 }
 
 func TestVerify(t *testing.T) {
-	utility.RegisterVerify("phone", func(in interface{}, args []string) bool {
+	utility.RegisterVerifyFunc("phone", func(in interface{}, args []string) bool {
 		supportInternational := false
 		if len(args) > 0 && args[0] == "international" {
 			supportInternational = true
@@ -66,7 +66,7 @@ func TestVerify(t *testing.T) {
 	}
 
 	for _, a := range tests {
-		if ok, _ := utility.Verify(a[0], u.String(a[1])); ok != u.Bool(a[2]) {
+		if ok, _ := utility.Verify(a[0], u.String(a[1]), log.DefaultLogger); ok != u.Bool(a[2]) {
 			t.Fatal("failed", a)
 		}
 	}
